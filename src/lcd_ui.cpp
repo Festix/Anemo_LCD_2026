@@ -58,9 +58,8 @@ void begin() {
   u8g2.sendBuffer();
 }
 
-void renderMain(const WindPacket* p, bool ok, uint32_t age_ms,
-                float dir_deg_corrected,
-                float speed_value) {
+void renderMain(const WindPacket* p, bool ok, uint32_t age_ms, float dir_deg_corrected, float speed_value, float holdProgress) {
+
   u8g2.clearBuffer();
 
   bool validDir = ok && p && ((p->status & (1u<<1)) != 0); // bit1 AS5600 OK
@@ -85,18 +84,30 @@ void renderMain(const WindPacket* p, bool ok, uint32_t age_ms,
   else        snprintf(b, sizeof(b), "--.--");
   u8g2.drawStr(64, 48, b);
 
-  // Pie limpio: solo estado
-  u8g2.setFont(u8g2_font_5x8_tf);
-  if (!ok || !p) {
-    u8g2.drawStr(0, 63, "SIN DATOS");
+  // Pie: estado o barra de hold (sin overlays)
+u8g2.setFont(u8g2_font_5x8_tf);
+
+if (holdProgress >= 0.0f) {
+  // Barra de progreso para entrar a CONFIG
+  if (holdProgress > 1.0f) holdProgress = 1.0f;
+
+    const int x = 0, y = 56, w = 128, h = 8;
+    u8g2.drawFrame(x, y, w, h);
+    int fill = (int)((w - 2) * holdProgress);
+    if (fill < 0) fill = 0;
+    if (fill > (w - 2)) fill = (w - 2);
+    u8g2.drawBox(x + 1, y + 1, fill, h - 2);
   } else {
-    snprintf(b, sizeof(b), "OK  %lums", (unsigned long)age_ms);
-    u8g2.drawStr(0, 63, b);
+      // Estado normal
+      char b[32];
+      if (!ok || !p) {
+        u8g2.drawStr(0, 63, "SIN DATOS");
+      } else {
+        snprintf(b, sizeof(b), "OK %lums", (unsigned long)age_ms);
+        u8g2.drawStr(0, 63, b);
+      }
   }
-
-  u8g2.sendBuffer();
 }
-
 void renderDiag(const WindPacket* p, bool ok, uint32_t age_ms,
                 float dir_raw_deg, float dir_corr_deg,
                 float pps, float rpm, float spd,

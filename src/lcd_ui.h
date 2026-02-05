@@ -14,10 +14,7 @@ enum class UiMode : uint8_t { MAIN, MENU, EDIT };
 
 void begin();
 
-// Pantalla principal (solo MAIN)
-void renderMain(const WindPacket* p, bool ok, uint32_t age_ms,
-                float dir_deg_corrected,
-                float speed_value);
+void renderMain(const WindPacket* p, bool ok, uint32_t age_ms, float dir_deg_corrected, float speed_value, float holdProgress = -1.0f);
 
 // Pantalla diagnóstico (solo DIAG)
 void renderDiag(const WindPacket* p, bool ok, uint32_t age_ms,
