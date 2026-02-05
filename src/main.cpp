@@ -52,6 +52,7 @@ static uint16_t crc16_modbus(const uint8_t* data, size_t len) {
 }
 
 // ===================== Estado ESPNOW =====================
+static volatile uint32_t rxCount = 0;
 static volatile bool havePkt = false;
 static WindPacket lastPkt {};
 static uint32_t lastRxMs = 0;
@@ -151,6 +152,9 @@ static void toggleScreen() {
 static void onRecv(const uint8_t* mac, const uint8_t* data, int len) {
   (void)mac;
 
+  
+  rxCount++;
+
   if (len != (int)sizeof(WindPacket)) {
     cntBadLen++;
     return;
@@ -187,34 +191,76 @@ static void onRecv(const uint8_t* mac, const uint8_t* data, int len) {
   havePkt = true;
 }
 
+
+static void printChannel(const char* tag) {
+  uint8_t ch; wifi_second_chan_t sch;
+  esp_err_t e = esp_wifi_get_channel(&ch, &sch);
+  Serial.printf("[%s] get_channel err=%d ch=%u\n", tag, (int)e, ch);
+}
+
+static void forceChannel(uint8_t ch) {
+  WiFi.mode(WIFI_STA);
+  delay(150);
+
+  // Asegurar que el driver WiFi esté iniciado
+  esp_err_t s = esp_wifi_start();
+  Serial.printf("[WiFi] start=%d\n", (int)s);
+
+  // (opcional) apagar power save
+  esp_wifi_set_ps(WIFI_PS_NONE);
+
+  // Set channel
+  esp_err_t e1 = esp_wifi_set_promiscuous(true);
+  esp_err_t e2 = esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+  esp_err_t e3 = esp_wifi_set_promiscuous(false);
+
+  Serial.printf("[CH] prom_on=%d set_ch=%d prom_off=%d (want %u)\n",
+                (int)e1, (int)e2, (int)e3, ch);
+
+  uint8_t nowCh; wifi_second_chan_t sch;
+  esp_err_t g = esp_wifi_get_channel(&nowCh, &sch);
+  Serial.printf("[CH] get_channel=%d ch=%u\n", (int)g, nowCh);
+}
+
+static void espnowBegin() {
+  Serial.printf("[WiFi] STA MAC=%s\n", WiFi.macAddress().c_str());
+  printChannel("BEFORE");
+
+  forceChannel(1);   // <-- ACA queda canal 1 sí o sí (o te muestra el error)
+
+  esp_err_t e = esp_now_init();
+  Serial.printf("[ESP-NOW] init=%d\n", (int)e);
+  if (e == ESP_OK) {
+    esp_now_register_recv_cb(onRecv);
+    Serial.println("[ESP-NOW] recv_cb registered OK");
+  }
+}
+
+
+
 // ===================== Setup/Loop =====================
 void setup() {
   Serial.begin(115200);
-  delay(50);
+  delay(200);
 
-  loadSettings();
-  buttonsBegin();
-  lcd_ui::begin();
+  Serial.printf("[WiFi] STA MAC=%s\n", WiFi.macAddress().c_str());
 
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect(true, true);
-  
-  esp_wifi_set_promiscuous(true);
-  esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
-  esp_wifi_set_promiscuous(false);
+  forceChannel(1);
 
-  esp_now_init();
-
-  if (esp_now_init() != ESP_OK) {
-    Serial.println("[ESP-NOW] init FAIL");
-  } else {
+  esp_err_t e = esp_now_init();
+  Serial.printf("[ESP-NOW] init=%d\n", (int)e);
+  if (e == ESP_OK) {
     esp_now_register_recv_cb(onRecv);
-    Serial.println("[ESP-NOW] init OK");
+    Serial.println("[ESP-NOW] recv_cb registered OK");
   }
 }
 
 void loop() {
   const uint32_t now = millis();
+  static uint32_t lastLogMs = 0;
+  static uint32_t lastRxCount = 0;
+  static bool lastOk = false;
+
   buttonsPoll();
 
   // ---- Estado datos ----
@@ -333,6 +379,31 @@ void loop() {
     } else {
       lcd_ui::renderDiag(p, ok, age, dirRawDeg, dirCorrDeg, pps, rpm, spd,
                          cfg.dir_offset_deg, cntLost, cntBadLen, cntBadMagic, cntBadCrc);
+    }
+  }
+
+  if (millis() - lastLogMs >= 1000) {
+    lastLogMs = millis();
+
+    uint32_t c = rxCount; // lectura “rápida”
+    uint32_t d = c - lastRxCount;
+    lastRxCount = c;
+
+    bool okNow = havePkt && ((millis() - lastRxMs) <= NO_DATA_MS);
+
+    Serial.printf("[ESPNOW] +%lu pkt/s  ok=%d  age=%lums  seq=%lu  lost=%lu  badCrc=%lu badLen=%lu badMagic=%lu\n",
+                  (unsigned long)d,
+                  okNow ? 1 : 0,
+                  okNow ? (unsigned long)(millis() - lastRxMs) : 0UL,
+                  havePkt ? (unsigned long)lastPkt.seq : 0UL,
+                  (unsigned long)cntLost,
+                  (unsigned long)cntBadCrc,
+                  (unsigned long)cntBadLen,
+                  (unsigned long)cntBadMagic);
+
+    if (okNow != lastOk) {
+      Serial.printf("[LINK] %s\n", okNow ? "ONLINE" : "OFFLINE");
+      lastOk = okNow;
     }
   }
 }
