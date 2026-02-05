@@ -98,16 +98,13 @@ if (holdProgress >= 0.0f) {
     if (fill > (w - 2)) fill = (w - 2);
     u8g2.drawBox(x + 1, y + 1, fill, h - 2);
   } else {
-      // Estado normal
-      char b[32];
-      if (!ok || !p) {
-        u8g2.drawStr(0, 63, "SIN DATOS");
-      } else {
-        snprintf(b, sizeof(b), "OK %lums", (unsigned long)age_ms);
-        u8g2.drawStr(0, 63, b);
-      }
+     
   }
+  
+  u8g2.sendBuffer();
 }
+
+
 void renderDiag(const WindPacket* p, bool ok, uint32_t age_ms,
                 float dir_raw_deg, float dir_corr_deg,
                 float pps, float rpm, float spd,

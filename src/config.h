@@ -20,3 +20,7 @@ static constexpr uint32_t NO_DATA_MS = 2000;   // si no hay paquetes en 2s -> NO
 
 // Para evitar falsos toques: mantener OK apretado para entrar a Config
 static constexpr uint32_t MENU_HOLD_MS = 1200; // 1.2s
+
+// ===================== ESP-NOW =====================
+static constexpr uint8_t ESPNOW_CHANNEL = 1;   // poné el mismo canal que el transmisor
+

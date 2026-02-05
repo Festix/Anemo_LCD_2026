@@ -1,83 +1,33 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <esp_WiFi.h>
 #include <esp_now.h>
 #include <Preferences.h>
 
 #include "config.h"
-#include "wind_packet.h"
-#include "crc16_modbus.h"
 #include "lcd_ui.h"
+#include "wind_packet.h"
 
-// ===================== ESP-NOW RX =====================
-static WindPacket lastPkt{};
-static bool havePkt = false;
-
-static uint32_t lastRxMs = 0;
-static uint32_t lastSeq = 0;
-static bool seqInit = false;
-
-static uint32_t cntLost = 0;
-static uint32_t cntBadCrc = 0;
-static uint32_t cntBadMagic = 0;
-static uint32_t cntBadLen = 0;
-
-static bool validatePacket(const WindPacket& p) {
-  if (p.magic != WIND_MAGIC || p.version != WIND_VER) return false;
-  const uint8_t* bytes = (const uint8_t*)&p;
-  uint16_t calc = crc16_modbus(bytes, sizeof(WindPacket) - sizeof(p.crc16));
-  return (calc == p.crc16);
-}
-
-// Callback API vieja (Arduino-ESP32 v1/v2)
-void onRecv(const uint8_t* mac, const uint8_t* data, int len) {
-  (void)mac;
-
-  if (len != (int)sizeof(WindPacket)) { cntBadLen++; return; }
-
-  WindPacket p;
-  memcpy(&p, data, sizeof(WindPacket));
-
-  if (p.magic != WIND_MAGIC || p.version != WIND_VER) { cntBadMagic++; return; }
-  if (!validatePacket(p)) { cntBadCrc++; return; }
-
-  if (!seqInit) {
-    seqInit = true;
-  } else {
-    uint32_t expected = lastSeq + 1;
-    if (p.seq != expected) {
-      if (p.seq > expected) cntLost += (p.seq - expected);
-      // si p.seq < expected => reset del emisor, no contamos
-    }
-  }
-  lastSeq = p.seq;
-
-  lastPkt = p;
-  havePkt = true;
-  lastRxMs = millis();
-}
-
-// ===================== SETTINGS (Preferences) =====================
-Preferences prefs;
-
-struct Settings {
+// ===================== Settings persistentes =====================
+struct AppConfig {
   int16_t dir_offset_deg = 0;   // -180..180
-  float   speed_factor   = 1.0; // multiplicador
-  uint8_t speed_src      = 0;   // 0=PPS, 1=RPM
+  float   speed_factor  = 1.0f; // multiplicador
+  uint8_t speed_src     = 0;    // 0=PPS, 1=RPM
 };
 
-static Settings cfg;
+static Preferences prefs;
+static AppConfig cfg;
 
 static void loadSettings() {
   prefs.begin("anemo", true);
   cfg.dir_offset_deg = prefs.getShort("dir_off", 0);
-  cfg.speed_factor   = prefs.getFloat("spd_fac", 1.0f);
-  cfg.speed_src      = prefs.getUChar("spd_src", 0);
+  cfg.speed_factor  = prefs.getFloat("spd_fac", 1.0f);
+  cfg.speed_src     = prefs.getUChar("spd_src", 0);
   prefs.end();
 
-  if (cfg.dir_offset_deg < -180) cfg.dir_offset_deg = -180;
-  if (cfg.dir_offset_deg >  180) cfg.dir_offset_deg =  180;
+  cfg.dir_offset_deg = constrain(cfg.dir_offset_deg, -180, 180);
   if (!(cfg.speed_factor > 0.0001f && cfg.speed_factor < 1000.0f)) cfg.speed_factor = 1.0f;
-  if (cfg.speed_src > 1) cfg.speed_src = 0;
+  cfg.speed_src = (cfg.speed_src > 1) ? 0 : cfg.speed_src;
 }
 
 static void saveSettings() {
@@ -88,42 +38,55 @@ static void saveSettings() {
   prefs.end();
 }
 
-static float applyDir(float dirDeg) {
-  float d = dirDeg + (float)cfg.dir_offset_deg;
-  while (d < 0) d += 360.0f;
-  while (d >= 360.0f) d -= 360.0f;
-  return d;
+// ===================== CRC16 Modbus (para validar paquete) =====================
+static uint16_t crc16_modbus(const uint8_t* data, size_t len) {
+  uint16_t crc = 0xFFFF;
+  for (size_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (int b = 0; b < 8; b++) {
+      if (crc & 1) crc = (crc >> 1) ^ 0xA001;
+      else         crc >>= 1;
+    }
+  }
+  return crc;
 }
 
-static float calcSpeed(const WindPacket& p) {
-  float base = (cfg.speed_src == 0) ? (p.pps_centi / 100.0f)
-                                    : (p.rpm_centi / 100.0f);
-  return base * cfg.speed_factor;
-}
+// ===================== Estado ESPNOW =====================
+static volatile bool havePkt = false;
+static WindPacket lastPkt {};
+static uint32_t lastRxMs = 0;
 
-// ===================== BOTONES (4) =====================
-// Pullup interno. Activo LOW.
+static uint32_t lastSeq = 0;
+static bool haveSeq = false;
+
+static uint32_t cntLost = 0;
+static uint32_t cntBadLen = 0;
+static uint32_t cntBadMagic = 0;
+static uint32_t cntBadCrc = 0;
+
+// ===================== Botones touch =====================
 struct Btn {
   uint8_t pin = 0;
-  bool stable = true;      // HIGH = suelto
-  bool lastStable = true;
+  bool stable = false;      // estado estable
+  bool lastStable = false;  // estado estable anterior
   uint32_t tDeb = 0;
 };
 
-static Btn b1, b2, b3, b4;
-
-static uint8_t btnPressMask = 0; // flancos (press)
+static Btn b[4];
+static uint8_t btnPressMask = 0; // flancos LOW->HIGH
 static uint8_t btnDownMask  = 0; // estado estable (down=1)
 
-static void buttonsBegin() {
-  b1.pin = BTN1_PIN; b2.pin = BTN2_PIN; b3.pin = BTN3_PIN; b4.pin = BTN4_PIN;
+static inline bool press(uint8_t i) { return (btnPressMask & (1u << i)) != 0; }
+static inline bool down(uint8_t i)  { return (btnDownMask  & (1u << i)) != 0; }
 
-  Btn* bs[] = {&b1,&b2,&b3,&b4};
-  for (auto* b : bs) {
-    pinMode(b->pin, INPUT_PULLDOWN);
-    b->stable = digitalRead(b->pin);
-    b->lastStable = b->stable;
-    b->tDeb = millis();
+static void buttonsBegin() {
+  const uint8_t pins[4] = { BTN1_PIN, BTN2_PIN, BTN3_PIN, BTN4_PIN };
+  for (int i = 0; i < 4; i++) {
+    b[i].pin = pins[i];
+    pinMode(b[i].pin, INPUT_PULLDOWN);
+    b[i].stable = digitalRead(b[i].pin);
+    b[i].lastStable = b[i].stable;
+    b[i].tDeb = millis();
   }
 }
 
@@ -132,111 +95,143 @@ static void buttonsPoll() {
   const uint32_t DB = 60;
 
   btnPressMask = 0;
+  btnDownMask = 0;
 
-  Btn* bs[] = {&b1,&b2,&b3,&b4};
-  for (int i=0;i<4;i++) {
-    auto* b = bs[i];
-    bool raw = digitalRead(b->pin);
+  for (int i = 0; i < 4; i++) {
+    bool raw = digitalRead(b[i].pin);
 
-    if (raw != b->stable && (now - b->tDeb) >= DB) {
-      b->lastStable = b->stable;
-      b->stable = raw;
-      b->tDeb = now;
+    if (raw != b[i].stable) {
+      if ((now - b[i].tDeb) >= DB) {
+        b[i].lastStable = b[i].stable;
+        b[i].stable = raw;
+        b[i].tDeb = now;
 
-      // flanco LOW->HIGH
-      if (b->lastStable == false && b->stable == true) {
-        btnPressMask |= (1u<<i);
+        // flanco LOW->HIGH
+        if (b[i].lastStable == false && b[i].stable == true) {
+          btnPressMask |= (1u << i);
+        }
       }
+    } else {
+      b[i].tDeb = now; // estable: resetea ventana
     }
-  }
 
-  // downMask: HIGH = presionado
-  btnDownMask =
-    ((b1.stable == true) ? 1u : 0u) |
-    ((b2.stable == true) ? 2u : 0u) |
-    ((b3.stable == true) ? 4u : 0u) |
-    ((b4.stable == true) ? 8u : 0u);
+    if (b[i].stable) btnDownMask |= (1u << i);
+  }
 }
 
-static inline bool press(int i) { return (btnPressMask & (1u<<i)) != 0; }
-static inline bool down (int i) { return (btnDownMask  & (1u<<i)) != 0; }
-// i: 0=B1, 1=B2, 2=B3, 3=B4
-
-// ===================== UI / PANTALLAS =====================
-enum class Screen : uint8_t { MAIN, DIAG, INFO, CONFIG };
-
+// ===================== UI: pantallas y menú =====================
+enum class Screen : uint8_t { MAIN, DIAG };
 static Screen screen = Screen::MAIN;
 
-// CONFIG (menu)
+static bool inConfig = false;
 static lcd_ui::UiMode uiMode = lcd_ui::UiMode::MENU;
 static int menuIndex = 0;
-static const int MENU_COUNT = 3;
+static constexpr int MENU_COUNT = 3;
 
 // Hold OK para entrar a CONFIG
-static uint32_t okHoldStartMs = 0;
 static bool okHoldArmed = false;
-
-static void nextScreen() {
-  if (screen == Screen::MAIN) screen = Screen::DIAG;
-  else if (screen == Screen::DIAG) screen = Screen::INFO;
-  else if (screen == Screen::INFO) screen = Screen::MAIN;
-  else /*CONFIG*/ {}
-}
-
-static void prevScreen() {
-  if (screen == Screen::MAIN) screen = Screen::INFO;
-  else if (screen == Screen::INFO) screen = Screen::DIAG;
-  else if (screen == Screen::DIAG) screen = Screen::MAIN;
-  else /*CONFIG*/ {}
-}
+static uint32_t okHoldStartMs = 0;
 
 static void enterConfig() {
-  screen = Screen::CONFIG;
+  inConfig = true;
   uiMode = lcd_ui::UiMode::MENU;
-  // menuIndex se mantiene (o ponelo en 0 si querés)
+  menuIndex = 0;
 }
 
 static void exitConfigToMain() {
+  inConfig = false;
   screen = Screen::MAIN;
-  uiMode = lcd_ui::UiMode::MENU;
 }
 
-// ===================== SETUP / LOOP =====================
+static void toggleScreen() {
+  screen = (screen == Screen::MAIN) ? Screen::DIAG : Screen::MAIN;
+}
+
+// ===================== ESPNOW callback =====================
+static void onRecv(const uint8_t* mac, const uint8_t* data, int len) {
+  (void)mac;
+
+  if (len != (int)sizeof(WindPacket)) {
+    cntBadLen++;
+    return;
+  }
+
+  WindPacket pkt;
+  memcpy(&pkt, data, sizeof(pkt));
+
+  if (pkt.magic != WIND_MAGIC || pkt.version != WIND_VER) {
+    cntBadMagic++;
+    return;
+  }
+
+  // CRC de todo menos el campo crc16
+  const uint16_t calc = crc16_modbus((const uint8_t*)&pkt, sizeof(WindPacket) - sizeof(pkt.crc16));
+  if (calc != pkt.crc16) {
+    cntBadCrc++;
+    return;
+  }
+
+  // lost por seq
+  if (haveSeq) {
+    const uint32_t expect = lastSeq + 1;
+    if (pkt.seq != expect) {
+      if (pkt.seq > expect) cntLost += (pkt.seq - expect);
+      else cntLost++; // wrap o reorder raro, cuenta 1
+    }
+  }
+  lastSeq = pkt.seq;
+  haveSeq = true;
+
+  lastPkt = pkt;
+  lastRxMs = millis();
+  havePkt = true;
+}
+
+// ===================== Setup/Loop =====================
 void setup() {
   Serial.begin(115200);
-  delay(200);
+  delay(50);
 
   loadSettings();
   buttonsBegin();
   lcd_ui::begin();
 
   WiFi.mode(WIFI_STA);
-  Serial.print("RX MAC (STA): ");
-  Serial.println(WiFi.macAddress());
+  WiFi.disconnect(true, true);
+  
+  esp_wifi_set_promiscuous(true);
+  esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
+  esp_wifi_set_promiscuous(false);
+
+  esp_now_init();
 
   if (esp_now_init() != ESP_OK) {
-    Serial.println("ERROR: esp_now_init failed");
-    while (true) delay(1000);
+    Serial.println("[ESP-NOW] init FAIL");
+  } else {
+    esp_now_register_recv_cb(onRecv);
+    Serial.println("[ESP-NOW] init OK");
   }
-  esp_now_register_recv_cb(onRecv);
-  Serial.println("ESP-NOW RX ready");
 }
 
 void loop() {
   const uint32_t now = millis();
   buttonsPoll();
 
-  // ===================== lógica HOLD OK (entrar a CONFIG) =====================
-  if (screen != Screen::CONFIG) {
-    if (down(3)) { // OK presionado
+  // ---- Estado datos ----
+  bool ok = havePkt;
+  uint32_t age = ok ? (now - lastRxMs) : 0;
+  if (!ok || age > NO_DATA_MS) ok = false;
+
+  // ---- OK hold para entrar config (con lockout hasta soltar) ----
+  if (!inConfig) {
+    if (down(3)) { // B4
       if (!okHoldArmed) {
         okHoldArmed = true;
         okHoldStartMs = now;
       } else {
         if ((now - okHoldStartMs) >= MENU_HOLD_MS) {
           enterConfig();
-          // bloquear para que no re-entre
-          okHoldArmed = false;
+          okHoldArmed = false; // lockout: no re-entra hasta soltar
         }
       }
     } else {
@@ -246,107 +241,98 @@ void loop() {
     okHoldArmed = false;
   }
 
-  // ===================== navegación =====================
-  if (screen != Screen::CONFIG) {
-    // Entre pantallas: B1/B2
-    if (press(1)) nextScreen(); // B2
-    if (press(0)) prevScreen(); // B1
+  // ---- Navegación ----
+  if (!inConfig) {
+    if (press(0) || press(1)) { // B1 o B2 alterna MAIN/DIAG
+      toggleScreen();
+    }
   } else {
-    // CONFIG:
-    // MENU: B2 next, B3 prev, OK edit, B1 exit
-    // EDIT: B2 +, B3 -, OK save, B1 back
+    // CONFIG: MENU o EDIT
     if (uiMode == lcd_ui::UiMode::MENU) {
-      if (press(0)) { exitConfigToMain(); } // salir de config
-      if (press(1)) { menuIndex = (menuIndex + 1) % MENU_COUNT; } // next item
-      if (press(2)) { menuIndex = (menuIndex + MENU_COUNT - 1) % MENU_COUNT; } // prev item
-      if (press(3)) { uiMode = lcd_ui::UiMode::EDIT; } // editar
+      if (press(0)) { // B1 salir
+        exitConfigToMain();
+      }
+      if (press(1)) { // B2 next item
+        menuIndex = (menuIndex + 1) % MENU_COUNT;
+      }
+      if (press(2)) { // B3 prev item
+        menuIndex = (menuIndex + MENU_COUNT - 1) % MENU_COUNT;
+      }
+      if (press(3)) { // OK -> editar
+        uiMode = lcd_ui::UiMode::EDIT;
+      }
     } else { // EDIT
-      if (press(0)) { uiMode = lcd_ui::UiMode::MENU; } // volver sin guardar
-      if (press(3)) { saveSettings(); uiMode = lcd_ui::UiMode::MENU; } // guardar
+      if (press(0)) { // B1 volver sin guardar
+        uiMode = lcd_ui::UiMode::MENU;
+      }
+      if (press(3)) { // OK guardar y volver
+        saveSettings();
+        uiMode = lcd_ui::UiMode::MENU;
+      }
 
       if (menuIndex == 0) { // Offset proa
         if (press(1)) cfg.dir_offset_deg = min<int16_t>(180, cfg.dir_offset_deg + 1);
         if (press(2)) cfg.dir_offset_deg = max<int16_t>(-180, cfg.dir_offset_deg - 1);
       } else if (menuIndex == 1) { // Factor vel.
-        if (press(1)) cfg.speed_factor *= 1.02f;
-        if (press(2)) cfg.speed_factor /= 1.02f;
-        if (cfg.speed_factor < 0.0001f) cfg.speed_factor = 0.0001f;
-        if (cfg.speed_factor > 1000.0f) cfg.speed_factor = 1000.0f;
+        if (press(1)) cfg.speed_factor += 0.01f;
+        if (press(2)) cfg.speed_factor = max(0.01f, cfg.speed_factor - 0.01f);
       } else if (menuIndex == 2) { // Fuente vel.
-        if (press(1) || press(2)) cfg.speed_src = 1 - cfg.speed_src;
+        if (press(1) || press(2)) cfg.speed_src = (cfg.speed_src == 0) ? 1 : 0;
       }
     }
   }
 
-  // ===================== Render (5 Hz) =====================
-  static uint32_t lastDraw = 0;
-  if (now - lastDraw >= LCD_FPS_MS) {
-    lastDraw = now;
+  // ---- Render (5 Hz) ----
+  static uint32_t lastUiMs = 0;
+  if ((now - lastUiMs) >= LCD_FPS_MS) {
+    lastUiMs = now;
 
-    bool ok = havePkt;
-    uint32_t age = ok ? (now - lastRxMs) : 0;
+    // Cálculos
+    const WindPacket* p = (ok) ? &lastPkt : nullptr;
 
-    if (ok && age > NO_DATA_MS) ok = false;
+    float dirRawDeg = 0.0f;
+    float dirCorrDeg = 0.0f;
+    float pps = 0.0f;
+    float rpm = 0.0f;
+    float spd = 0.0f;
 
-    // Pre-cálculos
-    float dirRaw = ok ? (lastPkt.angle_cdeg / 100.0f) : 0.0f;
-    float dirCorr = applyDir(dirRaw);
+    if (p) {
+      dirRawDeg  = (float)p->raw_angle * 360.0f / 4096.0f;
+      dirCorrDeg = (float)p->angle_cdeg / 100.0f;
 
-    float pps = ok ? (lastPkt.pps_centi / 100.0f) : 0.0f;
-    float rpm = ok ? (lastPkt.rpm_centi / 100.0f) : 0.0f;
-    float spd = ok ? calcSpeed(lastPkt) : 0.0f;
+      // aplica offset (convención simple)
+      dirCorrDeg += (float)cfg.dir_offset_deg;
+      while (dirCorrDeg < 0)   dirCorrDeg += 360.0f;
+      while (dirCorrDeg >= 360.0f) dirCorrDeg -= 360.0f;
 
-    lcd_ui::SettingsView view{cfg.dir_offset_deg, cfg.speed_factor, cfg.speed_src};
+      pps = (float)p->pps_centi / 100.0f;
+      rpm = (float)p->rpm_centi / 100.0f;
 
-    switch (screen) {
-      case Screen::MAIN:
-        lcd_ui::renderMain(ok ? &lastPkt : nullptr, ok, age, dirCorr, spd);
-        break;
-
-      case Screen::DIAG:
-        lcd_ui::renderDiag(ok ? &lastPkt : nullptr, ok, age,
-                           dirRaw, dirCorr,
-                           pps, rpm, spd,
-                           cfg.dir_offset_deg,
-                           cntLost, cntBadLen, cntBadMagic, cntBadCrc);
-        break;
-
-      case Screen::INFO:
-        lcd_ui::renderInfo(ok ? &lastPkt : nullptr, ok, age, view, dirCorr, spd);
-        break;
-
-      case Screen::CONFIG:
-        lcd_ui::renderMenu(uiMode, menuIndex, view);
-        break;
+      float base = (cfg.speed_src == 0) ? pps : rpm;
+      spd = base * cfg.speed_factor;
     }
-  }
 
-  // ===================== Serial debug (1 Hz) =====================
-  static uint32_t lastPrint = 0;
-  if (now - lastPrint >= 1000) {
-    lastPrint = now;
+    // hold progress (solo MAIN, solo mientras está armado)
+    float holdProgress = -1.0f;
+    if (!inConfig && screen == Screen::MAIN && okHoldArmed && down(3)) {
+      holdProgress = (float)(now - okHoldStartMs) / (float)MENU_HOLD_MS;
+      if (holdProgress < 0.0f) holdProgress = 0.0f;
+      if (holdProgress > 1.0f) holdProgress = 1.0f;
+    }
 
-    if (!havePkt) {
-      Serial.printf("[NO PKT] badLen=%lu badMagic=%lu badCrc=%lu\n",
-                    (unsigned long)cntBadLen,
-                    (unsigned long)cntBadMagic,
-                    (unsigned long)cntBadCrc);
+    // vista cfg para UI
+    lcd_ui::SettingsView viewCfg;
+    viewCfg.dir_offset_deg = cfg.dir_offset_deg;
+    viewCfg.speed_factor   = cfg.speed_factor;
+    viewCfg.speed_src      = cfg.speed_src;
+
+    if (inConfig) {
+      lcd_ui::renderMenu(uiMode, menuIndex, viewCfg);
+    } else if (screen == Screen::MAIN) {
+      lcd_ui::renderMain(p, ok, age, dirCorrDeg, spd, holdProgress);
     } else {
-      uint32_t age = now - lastRxMs;
-      float dirCorr = applyDir(lastPkt.angle_cdeg / 100.0f);
-      float pps = lastPkt.pps_centi / 100.0f;
-      float rpm = lastPkt.rpm_centi / 100.0f;
-      float spd = calcSpeed(lastPkt);
-
-      Serial.printf("[OK] seq=%lu age=%lums dir=%.2f pps=%.2f rpm=%.2f spd=%.2f vbat=%umV status=0x%04X lost=%lu badCrc=%lu badMagic=%lu\n",
-                    (unsigned long)lastPkt.seq,
-                    (unsigned long)age,
-                    dirCorr, pps, rpm, spd,
-                    lastPkt.vbat_mV,
-                    lastPkt.status,
-                    (unsigned long)cntLost,
-                    (unsigned long)cntBadCrc,
-                    (unsigned long)cntBadMagic);
+      lcd_ui::renderDiag(p, ok, age, dirRawDeg, dirCorrDeg, pps, rpm, spd,
+                         cfg.dir_offset_deg, cntLost, cntBadLen, cntBadMagic, cntBadCrc);
     }
   }
 }
