@@ -27,4 +27,9 @@ void renderDiag(const WindPacket* p, bool ok, uint32_t age_ms,
 
 void renderMenu(UiMode mode, int menuIndex, const SettingsView& cfg);
 
+void renderHist10m(const uint16_t* dir_ddeg,
+                   const uint16_t* spd_centi,
+                   uint16_t head, bool full);
+
+
 } // namespace lcd_ui

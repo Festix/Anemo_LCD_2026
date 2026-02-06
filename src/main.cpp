@@ -73,6 +73,16 @@ static uint32_t cntBadLen = 0;
 static uint32_t cntBadMagic = 0;
 static uint32_t cntBadCrc = 0;
 
+// ===================== Historial para gráficas ===================== 
+static constexpr int HIST_LEN = 600;
+
+static uint16_t hist_dir_ddeg[HIST_LEN]; // 0..3599
+static uint16_t hist_spd_centi[HIST_LEN]; // knots*100
+static uint16_t hist_head = 0;
+static bool hist_full = false;
+
+static uint32_t lastHistMs = 0;
+
 // ===================== Botones touch =====================
 struct Btn {
   uint8_t pin = 0;
@@ -129,7 +139,7 @@ static void buttonsPoll() {
 }
 
 // ===================== UI: pantallas y menú =====================
-enum class Screen : uint8_t { MAIN, DIAG };
+enum class Screen : uint8_t { MAIN, DIAG, HIST };
 static Screen screen = Screen::MAIN;
 
 static bool inConfig = false;
@@ -153,7 +163,9 @@ static void exitConfigToMain() {
 }
 
 static void toggleScreen() {
-  screen = (screen == Screen::MAIN) ? Screen::DIAG : Screen::MAIN;
+  if (screen == Screen::MAIN) screen = Screen::DIAG;
+  else if (screen == Screen::DIAG) screen = Screen::HIST;
+  else screen = Screen::MAIN;
 }
 
 // ===================== ESPNOW callback =====================
@@ -414,7 +426,28 @@ void loop() {
         lastDirCorrDeg = dirCorrDeg;
         lastSpdKn      = spd;
       }
+      
+      lastDirCorrDeg = dirCorrDeg;
+      lastSpdKn      = spd;
+      // ---- HIST 10 min (1 Hz) ----
+      if ((now - lastHistMs) >= 1000) {
+        lastHistMs = now;
+
+        uint16_t d = (uint16_t)lroundf(dirCorrDeg * 10.0f); // 0..3599
+        if (d >= 3600) d %= 3600;
+
+        uint16_t s = (uint16_t)lroundf(spd * 100.0f);       // kn*100
+
+        hist_dir_ddeg[hist_head]  = d;
+        hist_spd_centi[hist_head] = s;
+
+        hist_head = (hist_head + 1) % HIST_LEN;
+        if (hist_head == 0) hist_full = true;
+      }
+    } else {
+      lastOkForNmea = ok; // cuando p=null, ok es false, queda bien
     }
+    
 
 
 
@@ -439,6 +472,8 @@ void loop() {
       lcd_ui::renderMenu(uiMode, menuIndex, viewCfg);
     } else if (screen == Screen::MAIN) {
       lcd_ui::renderMain(p, ok, age, dirCorrDeg, spd, holdProgress);
+    } else if (screen == Screen::HIST) {
+      lcd_ui::renderHist10m(hist_dir_ddeg, hist_spd_centi, hist_head, hist_full);
     } else {
       uint32_t seq = (ok && p) ? p->seq : 0;
       uint16_t st  = (ok && p) ? p->status : 0;
