@@ -58,101 +58,102 @@ void begin() {
   u8g2.sendBuffer();
 }
 
-void renderMain(const WindPacket* p, bool ok, uint32_t age_ms,
+void renderMain(const WindPacket* p, bool ok, uint32_t /*age_ms*/,
                 float dir_deg_corrected, float speed_value, float holdProgress)
 {
   u8g2.clearBuffer();
 
   // --- Layout (128x64) ---
-  const int cx = 30;
+  const int cx = 31;
   const int cy = 32;
-  const int r  = 26;
-  const int xText = 62;
+  const int r  = 31;
+  const int xText = 70;
 
-  // Validez de dirección (según tu status bit1 AS5600 OK)
   bool validDir = ok && p && ((p->status & (1u << 1)) != 0);
 
-  // ===== Rosa / compás grande =====
+  // ===== Rosa grande =====
   u8g2.drawCircle(cx, cy, r);
   u8g2.drawCircle(cx, cy, r - 1);
 
-  // Marcas cardinales simples (N/E/S/O)
-  u8g2.drawVLine(cx, cy - r, 4);        // N
-  u8g2.drawVLine(cx, cy + r - 3, 4);    // S
-  u8g2.drawHLine(cx - r, cy, 4);        // W
-  u8g2.drawHLine(cx + r - 3, cy, 4);    // E
+  // Marcas internas (N/E/S/O)
+  const int tickOuter = r - 1;
+  const int tickInner = r - 10;
 
-  u8g2.setFont(u8g2_font_5x8_tf);
-  u8g2.drawStr(cx - 2, cy - r - 1, "N");
+  u8g2.drawLine(cx, cy - tickOuter, cx, cy - tickInner); // N
+  u8g2.drawLine(cx, cy + tickOuter, cx, cy + tickInner); // S
+  u8g2.drawLine(cx - tickOuter, cy, cx - tickInner, cy); // W
+  u8g2.drawLine(cx + tickOuter, cy, cx + tickInner, cy); // E
 
   if (!validDir) {
-    // cruz cuando no hay dirección válida
-    u8g2.drawLine(cx - 10, cy - 10, cx + 10, cy + 10);
-    u8g2.drawLine(cx - 10, cy + 10, cx + 10, cy - 10);
+    u8g2.drawLine(cx - 12, cy - 12, cx + 12, cy + 12);
+    u8g2.drawLine(cx - 12, cy + 12, cx + 12, cy - 12);
   } else {
-    // Flecha: 0° = Norte (arriba). Convertimos a radianes y rotamos -90°
+    // ===== Flecha: triángulo largo, relleno, angosto, base en el centro =====
     float a = deg2rad(dir_deg_corrected - 90.0f);
-    int x2 = cx + (int)(cosf(a) * (r - 4));
-    int y2 = cy + (int)(sinf(a) * (r - 4));
 
-    u8g2.drawLine(cx, cy, x2, y2);
+    // Punta casi en el borde
+    const float tipLen = (float)(r - 1);
+    int xt = cx + (int)(cosf(a) * tipLen);
+    int yt = cy + (int)(sinf(a) * tipLen);
+
+    // Base exactamente en el centro
+    const float baseLen = 0.0f;
+    int xb = cx + (int)(cosf(a) * baseLen);
+    int yb = cy + (int)(sinf(a) * baseLen);
+
+    // Perpendicular para ancho (más angosto)
+    const float w = 2.5f; // angosto
+    float ap = a + 1.57079632679f;
+
+    int xL = xb + (int)(cosf(ap) * w);
+    int yL = yb + (int)(sinf(ap) * w);
+    int xR = xb - (int)(cosf(ap) * w);
+    int yR = yb - (int)(sinf(ap) * w);
+
+    u8g2.drawTriangle(xt, yt, xL, yL, xR, yR);
+
+    // Centro prolijo
     u8g2.drawDisc(cx, cy, 2);
-
-    // puntita de flecha
-    int x3 = cx + (int)(cosf(a + 0.25f) * (r - 8));
-    int y3 = cy + (int)(sinf(a + 0.25f) * (r - 8));
-    int x4 = cx + (int)(cosf(a - 0.25f) * (r - 8));
-    int y4 = cy + (int)(sinf(a - 0.25f) * (r - 8));
-    u8g2.drawLine(x2, y2, x3, y3);
-    u8g2.drawLine(x2, y2, x4, y4);
   }
 
   // ===== Textos a la derecha =====
   char b[32];
 
-  // Labels
   u8g2.setFont(u8g2_font_6x12_tf);
-  u8g2.drawStr(xText, 12, "DIR");
-  u8g2.drawStr(xText, 36, "SPD");
+  u8g2.drawStr(xText, 14, "DIR");
+  u8g2.drawStr(xText, 40, "SPD");
 
-  // DIR grande
   u8g2.setFont(u8g2_font_7x13B_tf);
   if (ok && p) snprintf(b, sizeof(b), "%.1f%c", dir_deg_corrected, 176);
   else        snprintf(b, sizeof(b), "--.-%c", 176);
-  u8g2.drawStr(xText, 26, b);
+  u8g2.drawStr(xText, 28, b);
 
-  // SPD grande
-  u8g2.setFont(u8g2_font_7x13B_tf);
   if (ok && p) snprintf(b, sizeof(b), "%.2f", speed_value);
   else        snprintf(b, sizeof(b), "--.--");
-  u8g2.drawStr(xText, 50, b);
+  u8g2.drawStr(xText, 54, b);
 
-  // ===== Pie: barra de hold o estado =====
+  // ===== Pie: barra hold o estado =====
   u8g2.setFont(u8g2_font_5x8_tf);
 
   if (holdProgress >= 0.0f) {
     if (holdProgress > 1.0f) holdProgress = 1.0f;
 
-    const int x = 0, y = 56, w = 128, h = 8;
-    u8g2.drawFrame(x, y, w, h);
+    const int x = 0, y = 56, wBar = 128, hBar = 8;
+    u8g2.drawFrame(x, y, wBar, hBar);
 
-    int fill = (int)((w - 2) * holdProgress);
+    int fill = (int)((wBar - 2) * holdProgress);
     if (fill < 0) fill = 0;
-    if (fill > (w - 2)) fill = (w - 2);
+    if (fill > (wBar - 2)) fill = (wBar - 2);
 
-    u8g2.drawBox(x + 1, y + 1, fill, h - 2);
+    u8g2.drawBox(x + 1, y + 1, fill, hBar - 2);
   } else {
-    // Estado normal: OK / SIN DATOS + age
-    if (!ok || !p) {
-      u8g2.drawStr(0, 63, "SIN DATOS");
-    } else {
-      snprintf(b, sizeof(b), "OK %lums", (unsigned long)age_ms);
-      u8g2.drawStr(0, 63, b);
-    }
+    if (!ok || !p) u8g2.drawStr(0, 63, "SIN DATOS");
+    else           u8g2.drawStr(0, 63, "OK");
   }
 
   u8g2.sendBuffer();
 }
+
 
 
 void renderDiag(const WindPacket* p, bool ok, uint32_t age_ms,
