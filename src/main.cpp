@@ -13,6 +13,7 @@ struct AppConfig {
   int16_t dir_offset_deg = 0;   // -180..180
   float   speed_factor  = 1.0f; // multiplicador
   uint8_t speed_src     = 0;    // 0=PPS, 1=RPM
+  uint8_t espnow_channel = 1;  // 1..13
 };
 
 static char macStr[18] = {0}; // "AA:BB:CC:DD:EE:FF"
@@ -25,6 +26,9 @@ static void loadSettings() {
   cfg.dir_offset_deg = prefs.getShort("dir_off", 0);
   cfg.speed_factor  = prefs.getFloat("spd_fac", 1.0f);
   cfg.speed_src     = prefs.getUChar("spd_src", 0);
+  cfg.espnow_channel = prefs.getUChar("esp_ch", 1);
+  if (cfg.espnow_channel < 1) cfg.espnow_channel = 1;
+  if (cfg.espnow_channel > 13) cfg.espnow_channel = 13;
   prefs.end();
 
   cfg.dir_offset_deg = constrain(cfg.dir_offset_deg, -180, 180);
@@ -37,6 +41,7 @@ static void saveSettings() {
   prefs.putShort("dir_off", cfg.dir_offset_deg);
   prefs.putFloat("spd_fac", cfg.speed_factor);
   prefs.putUChar("spd_src", cfg.speed_src);
+  prefs.putUChar("esp_ch", cfg.espnow_channel);
   prefs.end();
 }
 
@@ -129,7 +134,7 @@ static Screen screen = Screen::MAIN;
 static bool inConfig = false;
 static lcd_ui::UiMode uiMode = lcd_ui::UiMode::MENU;
 static int menuIndex = 0;
-static constexpr int MENU_COUNT = 3;
+static constexpr int MENU_COUNT = 4;
 
 // Hold OK para entrar a CONFIG
 static bool okHoldArmed = false;
@@ -251,7 +256,8 @@ void setup() {
 
   // WiFi/Channel/ESPNOW
   Serial.printf("[WiFi] STA MAC=%s\n", WiFi.macAddress().c_str());
-  forceChannel(1);
+  forceChannel(cfg.espnow_channel);
+
 
   esp_err_t e = esp_now_init();
   Serial.printf("[ESP-NOW] init=%d\n", (int)e);
@@ -323,6 +329,18 @@ void loop() {
       }
       if (press(3)) { // OK guardar y volver
         saveSettings();
+        if (menuIndex == 3) {
+          // Reaplicar canal en vivo
+          esp_now_deinit();
+          forceChannel(cfg.espnow_channel);
+
+          esp_err_t e = esp_now_init();
+          Serial.printf("[ESP-NOW] reinit=%d ch=%u\n", (int)e, cfg.espnow_channel);
+          if (e == ESP_OK) {
+            esp_now_register_recv_cb(onRecv);
+            Serial.println("[ESP-NOW] recv_cb registered OK");
+          }
+        }
         uiMode = lcd_ui::UiMode::MENU;
       }
 
@@ -334,6 +352,10 @@ void loop() {
         if (press(2)) cfg.speed_factor = max(0.01f, cfg.speed_factor - 0.01f);
       } else if (menuIndex == 2) { // Fuente vel.
         if (press(1) || press(2)) cfg.speed_src = (cfg.speed_src == 0) ? 1 : 0;
+      }
+      else if (menuIndex == 3) { // ESP-NOW Channel
+        if (press(1)) cfg.espnow_channel = min<uint8_t>(13, cfg.espnow_channel + 1);
+        if (press(2)) cfg.espnow_channel = max<uint8_t>(1,  cfg.espnow_channel - 1);
       }
     }
   }
@@ -381,6 +403,9 @@ void loop() {
     viewCfg.dir_offset_deg = cfg.dir_offset_deg;
     viewCfg.speed_factor   = cfg.speed_factor;
     viewCfg.speed_src      = cfg.speed_src;
+    viewCfg.espnow_channel = cfg.espnow_channel;
+    viewCfg.macStr         = macStr;
+
 
     if (inConfig) {
       lcd_ui::renderMenu(uiMode, menuIndex, viewCfg);

@@ -40,6 +40,8 @@ const char* menuLabel(int idx) {
     case 0: return "Offset proa";
     case 1: return "Factor vel.";
     case 2: return "Fuente vel.";
+    case 3: return "ESP-NOW Canal";
+
     default: return "";
   }
 }
@@ -67,7 +69,7 @@ void renderMain(const WindPacket* p, bool ok, uint32_t /*age_ms*/,
   const int cx = 31;
   const int cy = 32;
   const int r  = 31;
-  const int xText = 70;
+  const int xText = 76;
 
   bool validDir = ok && p && ((p->status & (1u << 1)) != 0);
 
@@ -147,7 +149,7 @@ void renderMain(const WindPacket* p, bool ok, uint32_t /*age_ms*/,
 
     u8g2.drawBox(x + 1, y + 1, fill, hBar - 2);
   } else {
-    if (!ok || !p) u8g2.drawStr(0, 63, "SIN DATOS");
+    if (!ok || !p) u8g2.drawStr(0, 63, "NOK");
     else           u8g2.drawStr(0, 63, "OK");
   }
 
@@ -164,8 +166,8 @@ void renderDiag(const WindPacket* p, bool ok, uint32_t age_ms,
   u8g2.clearBuffer();
 
   u8g2.setFont(u8g2_font_6x12_tf);
-  u8g2.drawStr(0, 12, "DIAG");
-
+  u8g2.drawStr(0, 12, "Info - Diagnostico");
+  u8g2.drawLine(0,15,128,15);
   u8g2.setFont(u8g2_font_5x8_tf);
   char b[32];
 
@@ -177,15 +179,15 @@ void renderDiag(const WindPacket* p, bool ok, uint32_t age_ms,
   }
 
   // Línea 2: SEQ
-  snprintf(b, sizeof(b), "SEQ: %lu", (unsigned long)seq);
+  snprintf(b, sizeof(b), "Sequence : %lu", (unsigned long)seq);
   u8g2.drawStr(0, 34, b);
 
   // Línea 3: AGE
-  snprintf(b, sizeof(b), "AGE: %lums", (unsigned long)age_ms);
+  snprintf(b, sizeof(b), "Age: %lu ms", (unsigned long)age_ms);
   u8g2.drawStr(0, 44, b);
 
   // Línea 4: STATUS
-  snprintf(b, sizeof(b), "STAT: 0x%04X", (unsigned)status);
+  snprintf(b, sizeof(b), "Status: 0x%04X", (unsigned)status);
   u8g2.drawStr(0, 54, b);
 
   // Línea 5: MAC (abajo)
@@ -241,29 +243,54 @@ void renderInfo(const WindPacket* p, bool ok, uint32_t age_ms,
 
 void renderMenu(UiMode mode, int menuIndex, const SettingsView& cfg) {
   u8g2.clearBuffer();
+
+  // Marco
   u8g2.drawFrame(0, 0, 128, 64);
 
+  // Título
   u8g2.setFont(u8g2_font_7x13B_tf);
-  u8g2.drawStr(6, 14, (mode == UiMode::EDIT) ? "CONFIG (EDIT)" : "CONFIG");
+  u8g2.drawStr(6, 14, "CONFIG");
 
+  // Subtítulo modo
+  u8g2.setFont(u8g2_font_5x8_tf);
+  u8g2.drawStr(86, 14, (mode == UiMode::EDIT) ? "EDIT" : "MENU");
+
+  // Item (label)
   u8g2.setFont(u8g2_font_6x12_tf);
   u8g2.drawStr(6, 32, menuLabel(menuIndex));
+
+  // Caja de valor
+  u8g2.drawFrame(6, 38, 116, 18);
 
   char v[32];
   if (menuIndex == 0) snprintf(v, sizeof(v), "%d%c", (int)cfg.dir_offset_deg, 176);
   else if (menuIndex == 1) snprintf(v, sizeof(v), "x%.3f", cfg.speed_factor);
   else if (menuIndex == 2) snprintf(v, sizeof(v), "%s", (cfg.speed_src==0) ? "PPS" : "RPM");
+  else if (menuIndex == 3) snprintf(v, sizeof(v), "CH %u", (unsigned)cfg.espnow_channel);
   else snprintf(v, sizeof(v), "-");
 
   u8g2.setFont(u8g2_font_7x13B_tf);
-  u8g2.drawStr(6, 54, v);
+  u8g2.drawStr(10, 52, v);
 
-  // Ayuda corta (para que se lea)
+  // Footer: ayuda corta + MAC
   u8g2.setFont(u8g2_font_5x8_tf);
-  if (mode == UiMode::EDIT) u8g2.drawStr(6, 63, "B2+  B3-   OK=GUARDA  B1=SALIR");
-  else                     u8g2.drawStr(6, 63, "B2/B3 ITEM   OK=EDIT   B1=SALIR");
+
+  // Footer: MAC solo en el item de Canal
+  if (menuIndex == 3 && cfg.macStr && cfg.macStr[0]) {
+    char m[24];
+    snprintf(m, sizeof(m), "MAC %s", cfg.macStr);
+    u8g2.drawStr(6, 63, m);
+  }
+
+  // Ayuda muy corta (arriba del MAC si querés, o alternar)
+  if (mode == UiMode::EDIT) {
+    u8g2.drawStr(6, 24, "B2:+  B3:-  OK:GUARDA");
+  } else {
+    u8g2.drawStr(6, 24, "B2/B3:ITEM  OK:EDIT");
+  }
 
   u8g2.sendBuffer();
 }
+
 
 } // namespace lcd_ui

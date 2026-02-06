@@ -6,9 +6,11 @@
 namespace lcd_ui {
 
 struct SettingsView {
-  int16_t dir_offset_deg;   // -180..180
-  float   speed_factor;     // multiplicador
-  uint8_t speed_src;        // 0=PPS, 1=RPM
+  int16_t dir_offset_deg;
+  float   speed_factor;
+  uint8_t speed_src;
+  uint8_t espnow_channel;   // 1..13
+  const char* macStr;       // "AA:BB:CC:DD:EE:FF"
 };
 
 enum class UiMode : uint8_t { MAIN, MENU, EDIT };
