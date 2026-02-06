@@ -292,9 +292,11 @@ void loop() {
   static uint32_t lastLogMs = 0;
   static uint32_t lastRxCount = 0;
   static bool lastOk = false;
-
+  static float lastDirCorrDeg = 0.0f;
+  static float lastSpdKn      = 0.0f;
+  static bool  lastOkForNmea  = false;
+  
   buttonsPoll();
-
 
   // ---- Estado datos ----
   bool ok = havePkt;
@@ -384,6 +386,8 @@ void loop() {
 
     // Cálculos
     const WindPacket* p = (ok) ? &lastPkt : nullptr;
+   
+    lastOkForNmea = ok; // default, se setea true si el paquete es OK y se procesa para NMEA
 
     float dirRawDeg = 0.0f;
     float dirCorrDeg = 0.0f;
@@ -405,13 +409,14 @@ void loop() {
 
       float base = (cfg.speed_src == 0) ? pps : rpm;
       spd = base * cfg.speed_factor;
-        // Si spd ya está en nudos, listo. Si está en m/s, convertí: kn = spd * 1.94384f
-      float speed_kn = spd; //* 1.94384f;  // correcion para m/s a nudos si fuera necesario
-      nmea::tickOut(dirCorrDeg, speed_kn, ok);
       
-      // Si más adelante activás IN:
-      nmea::pollIn();
+      if (ok && p) {
+        lastDirCorrDeg = dirCorrDeg;
+        lastSpdKn      = spd;
+      }
     }
+
+
 
     // hold progress (solo MAIN, solo mientras está armado)
     float holdProgress = -1.0f;
@@ -439,6 +444,7 @@ void loop() {
       uint16_t st  = (ok && p) ? p->status : 0;
       lcd_ui::renderDiag(p, ok, age, seq, st, macStr, cntBadLen, cntBadMagic, cntBadCrc);
     }
+
   }
 
   if (millis() - lastLogMs >= 1000) {
@@ -465,5 +471,6 @@ void loop() {
       lastOk = okNow;
     }
 
+    nmea::tickOut(lastDirCorrDeg, lastSpdKn, lastOkForNmea);
   }
 }
