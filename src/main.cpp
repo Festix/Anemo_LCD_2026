@@ -243,8 +243,12 @@ void setup() {
   Serial.begin(115200);
   delay(200);
 
-  Serial.printf("[WiFi] STA MAC=%s\n", WiFi.macAddress().c_str());
+  loadSettings();
+  buttonsBegin();
+  lcd_ui::begin();
 
+  // WiFi/Channel/ESPNOW
+  Serial.printf("[WiFi] STA MAC=%s\n", WiFi.macAddress().c_str());
   forceChannel(1);
 
   esp_err_t e = esp_now_init();
