@@ -7,6 +7,7 @@
 #include "config.h"
 #include "lcd_ui.h"
 #include "wind_packet.h"
+#include "nmea.h"
 
 // ===================== Settings persistentes =====================
 struct AppConfig {
@@ -269,6 +270,13 @@ void setup() {
   String mac = WiFi.macAddress();
   snprintf(macStr, sizeof(macStr), "%s", mac.c_str());
 
+  nmea::Config nc;
+  nc.enabled_out = true;
+  nc.enabled_in  = false;   // lo activamos cuando quieras
+  nc.out_period_ms = 1000;  // 1 Hz
+  nc.talker = "WI";
+  nmea::begin(Serial, nc);
+
 }
 
 void loop() {
@@ -388,6 +396,12 @@ void loop() {
 
       float base = (cfg.speed_src == 0) ? pps : rpm;
       spd = base * cfg.speed_factor;
+        // Si spd ya está en nudos, listo. Si está en m/s, convertí: kn = spd * 1.94384f
+      float speed_kn = spd; //* 1.94384f;  // correcion para m/s a nudos si fuera necesario
+      nmea::tickOut(dirCorrDeg, speed_kn, ok);
+      
+      // Si más adelante activás IN:
+      nmea::pollIn();
     }
 
     // hold progress (solo MAIN, solo mientras está armado)
@@ -441,5 +455,6 @@ void loop() {
       Serial.printf("[LINK] %s\n", okNow ? "ONLINE" : "OFFLINE");
       lastOk = okNow;
     }
+
   }
 }
