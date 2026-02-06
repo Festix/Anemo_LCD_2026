@@ -30,18 +30,17 @@ bool validateLine(const char* line) {
   return cs == (uint8_t)got;
 }
 
-// ----------------- OUT: MWV -----------------
 static void printMWV(float dir_deg, float speed_kn, bool valid) {
   if (!s_io) return;
 
-  // Normalizar dirección 0..360
+  // Normalizar dirección
   while (dir_deg < 0) dir_deg += 360.0f;
   while (dir_deg >= 360.0f) dir_deg -= 360.0f;
 
-  // NMEA: $WIMWV,ddd,R,ss.s,N,A*hh
-  // R = Relative (aparente)
-  // N = knots
-  // A/V = valid/invalid
+  // Sanear valores raros (NaN/Inf rompen NMEA)
+  if (!isfinite(dir_deg)) dir_deg = 0;
+  if (!isfinite(speed_kn) || speed_kn < 0) speed_kn = 0;
+
   char body[64];
   snprintf(body, sizeof(body),
            "%sMWV,%03d,R,%.1f,N,%c",
@@ -52,10 +51,24 @@ static void printMWV(float dir_deg, float speed_kn, bool valid) {
 
   uint8_t cs = checksumBody(body);
 
-  char line[80];
+  char line[96];
   snprintf(line, sizeof(line), "$%s*%02X\r\n", body, cs);
+
+  // 1) Enviar a NMEA (Serial2)
   s_io->print(line);
+
+  // 2) Debug opcional por USB (para ver EXACTO qué se arma)
+  //    Descomentá 1 minuto:
+  // Serial.print("[NMEA OUT] ");
+  // Serial.print(line);
+
+  // 3) Auto-check del checksum (si falla, lo sabés al instante)
+  // if (!validateLine(line)) {
+  //   Serial.print("[NMEA OUT] INVALID LINE: ");
+  //   Serial.print(line);
+  // }
 }
+
 
 // ----------------- IN: lectura de lineas -----------------
 static bool readLine(char* buf, size_t buflen) {

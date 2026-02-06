@@ -248,8 +248,16 @@ static void espnowBegin() {
 
 // ===================== Setup/Loop =====================
 void setup() {
+ 
   Serial.begin(115200);
+ 
+  // Elegí el baud NMEA
+  // - NMEA 0183 clásico: 4800
+  // - NMEA “rápido” (AIS): 38400
+  // - Si es tu propio enlace TTL: podés usar 9600/115200, pero para compatibilidad NMEA: 4800
+  Serial2.begin(4800, SERIAL_8N1, RX2_PIN, TX2_PIN);
   delay(200);
+
 
   loadSettings();
   buttonsBegin();
@@ -275,7 +283,7 @@ void setup() {
   nc.enabled_in  = false;   // lo activamos cuando quieras
   nc.out_period_ms = 1000;  // 1 Hz
   nc.talker = "WI";
-  nmea::begin(Serial, nc);
+  nmea::begin(Serial2, nc);
 
 }
 
@@ -286,6 +294,7 @@ void loop() {
   static bool lastOk = false;
 
   buttonsPoll();
+
 
   // ---- Estado datos ----
   bool ok = havePkt;

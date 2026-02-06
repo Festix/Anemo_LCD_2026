@@ -24,3 +24,8 @@ static constexpr uint32_t MENU_HOLD_MS = 1200; // 1.2s
 // ===================== ESP-NOW =====================
 static constexpr uint8_t ESPNOW_CHANNEL = 1;   // poné el mismo canal que el transmisor
 
+// ===================== SERIAL2 config pins =====================
+static constexpr uint8_t RX2_PIN = 16; // NMEA IN
+static constexpr uint8_t TX2_PIN = 17; // NMEA OUT
+
+
