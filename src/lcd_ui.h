@@ -19,10 +19,9 @@ void renderMain(const WindPacket* p, bool ok, uint32_t age_ms,
                 float holdProgress = -1.0f);
 
 void renderDiag(const WindPacket* p, bool ok, uint32_t age_ms,
-                float dir_raw_deg, float dir_corr_deg,
-                float pps, float rpm, float spd,
-                int16_t dir_offset_deg,
-                uint32_t lost, uint32_t badLen, uint32_t badMagic, uint32_t badCrc);
+                uint32_t seq, uint16_t status,
+                const char* macStr,
+                uint32_t badLen, uint32_t badMagic, uint32_t badCrc);
 
 void renderMenu(UiMode mode, int menuIndex, const SettingsView& cfg);
 

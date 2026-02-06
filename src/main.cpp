@@ -15,6 +15,8 @@ struct AppConfig {
   uint8_t speed_src     = 0;    // 0=PPS, 1=RPM
 };
 
+static char macStr[18] = {0}; // "AA:BB:CC:DD:EE:FF"
+
 static Preferences prefs;
 static AppConfig cfg;
 
@@ -257,6 +259,10 @@ void setup() {
     esp_now_register_recv_cb(onRecv);
     Serial.println("[ESP-NOW] recv_cb registered OK");
   }
+
+  String mac = WiFi.macAddress();
+  snprintf(macStr, sizeof(macStr), "%s", mac.c_str());
+
 }
 
 void loop() {
@@ -381,8 +387,9 @@ void loop() {
     } else if (screen == Screen::MAIN) {
       lcd_ui::renderMain(p, ok, age, dirCorrDeg, spd, holdProgress);
     } else {
-      lcd_ui::renderDiag(p, ok, age, dirRawDeg, dirCorrDeg, pps, rpm, spd,
-                         cfg.dir_offset_deg, cntLost, cntBadLen, cntBadMagic, cntBadCrc);
+      uint32_t seq = (ok && p) ? p->seq : 0;
+      uint16_t st  = (ok && p) ? p->status : 0;
+      lcd_ui::renderDiag(p, ok, age, seq, st, macStr, cntBadLen, cntBadMagic, cntBadCrc);
     }
   }
 

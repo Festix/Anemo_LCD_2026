@@ -58,99 +58,147 @@ void begin() {
   u8g2.sendBuffer();
 }
 
-void renderMain(const WindPacket* p, bool ok, uint32_t age_ms, float dir_deg_corrected, float speed_value, float holdProgress) {
-
+void renderMain(const WindPacket* p, bool ok, uint32_t age_ms,
+                float dir_deg_corrected, float speed_value, float holdProgress)
+{
   u8g2.clearBuffer();
 
-  bool validDir = ok && p && ((p->status & (1u<<1)) != 0); // bit1 AS5600 OK
-  drawCompass(dir_deg_corrected, validDir);
+  // --- Layout (128x64) ---
+  const int cx = 30;
+  const int cy = 32;
+  const int r  = 26;
+  const int xText = 62;
 
+  // Validez de dirección (según tu status bit1 AS5600 OK)
+  bool validDir = ok && p && ((p->status & (1u << 1)) != 0);
+
+  // ===== Rosa / compás grande =====
+  u8g2.drawCircle(cx, cy, r);
+  u8g2.drawCircle(cx, cy, r - 1);
+
+  // Marcas cardinales simples (N/E/S/O)
+  u8g2.drawVLine(cx, cy - r, 4);        // N
+  u8g2.drawVLine(cx, cy + r - 3, 4);    // S
+  u8g2.drawHLine(cx - r, cy, 4);        // W
+  u8g2.drawHLine(cx + r - 3, cy, 4);    // E
+
+  u8g2.setFont(u8g2_font_5x8_tf);
+  u8g2.drawStr(cx - 2, cy - r - 1, "N");
+
+  if (!validDir) {
+    // cruz cuando no hay dirección válida
+    u8g2.drawLine(cx - 10, cy - 10, cx + 10, cy + 10);
+    u8g2.drawLine(cx - 10, cy + 10, cx + 10, cy - 10);
+  } else {
+    // Flecha: 0° = Norte (arriba). Convertimos a radianes y rotamos -90°
+    float a = deg2rad(dir_deg_corrected - 90.0f);
+    int x2 = cx + (int)(cosf(a) * (r - 4));
+    int y2 = cy + (int)(sinf(a) * (r - 4));
+
+    u8g2.drawLine(cx, cy, x2, y2);
+    u8g2.drawDisc(cx, cy, 2);
+
+    // puntita de flecha
+    int x3 = cx + (int)(cosf(a + 0.25f) * (r - 8));
+    int y3 = cy + (int)(sinf(a + 0.25f) * (r - 8));
+    int x4 = cx + (int)(cosf(a - 0.25f) * (r - 8));
+    int y4 = cy + (int)(sinf(a - 0.25f) * (r - 8));
+    u8g2.drawLine(x2, y2, x3, y3);
+    u8g2.drawLine(x2, y2, x4, y4);
+  }
+
+  // ===== Textos a la derecha =====
   char b[32];
 
-  // Etiquetas
+  // Labels
   u8g2.setFont(u8g2_font_6x12_tf);
-  u8g2.drawStr(64, 10, "DIR");
-  u8g2.drawStr(64, 34, "SPD");
+  u8g2.drawStr(xText, 12, "DIR");
+  u8g2.drawStr(xText, 36, "SPD");
 
   // DIR grande
   u8g2.setFont(u8g2_font_7x13B_tf);
   if (ok && p) snprintf(b, sizeof(b), "%.1f%c", dir_deg_corrected, 176);
   else        snprintf(b, sizeof(b), "--.-%c", 176);
-  u8g2.drawStr(64, 24, b);
+  u8g2.drawStr(xText, 26, b);
 
   // SPD grande
   u8g2.setFont(u8g2_font_7x13B_tf);
   if (ok && p) snprintf(b, sizeof(b), "%.2f", speed_value);
   else        snprintf(b, sizeof(b), "--.--");
-  u8g2.drawStr(64, 48, b);
+  u8g2.drawStr(xText, 50, b);
 
-  // Pie: estado o barra de hold (sin overlays)
-u8g2.setFont(u8g2_font_5x8_tf);
+  // ===== Pie: barra de hold o estado =====
+  u8g2.setFont(u8g2_font_5x8_tf);
 
-if (holdProgress >= 0.0f) {
-  // Barra de progreso para entrar a CONFIG
-  if (holdProgress > 1.0f) holdProgress = 1.0f;
+  if (holdProgress >= 0.0f) {
+    if (holdProgress > 1.0f) holdProgress = 1.0f;
 
     const int x = 0, y = 56, w = 128, h = 8;
     u8g2.drawFrame(x, y, w, h);
+
     int fill = (int)((w - 2) * holdProgress);
     if (fill < 0) fill = 0;
     if (fill > (w - 2)) fill = (w - 2);
+
     u8g2.drawBox(x + 1, y + 1, fill, h - 2);
   } else {
-     
+    // Estado normal: OK / SIN DATOS + age
+    if (!ok || !p) {
+      u8g2.drawStr(0, 63, "SIN DATOS");
+    } else {
+      snprintf(b, sizeof(b), "OK %lums", (unsigned long)age_ms);
+      u8g2.drawStr(0, 63, b);
+    }
   }
-  
+
   u8g2.sendBuffer();
 }
 
 
 void renderDiag(const WindPacket* p, bool ok, uint32_t age_ms,
-                float dir_raw_deg, float dir_corr_deg,
-                float pps, float rpm, float spd,
-                int16_t dir_offset_deg,
-                uint32_t lost, uint32_t badLen, uint32_t badMagic, uint32_t badCrc) {
+                uint32_t seq, uint16_t status,
+                const char* macStr,
+                uint32_t badLen, uint32_t badMagic, uint32_t badCrc)
+{
   u8g2.clearBuffer();
+
   u8g2.setFont(u8g2_font_6x12_tf);
-  u8g2.drawStr(0, 12, "DIAGNOSTICO");
+  u8g2.drawStr(0, 12, "DIAG");
 
   u8g2.setFont(u8g2_font_5x8_tf);
-  char b[44];
+  char b[32];
 
+  // Línea 1: link
   if (!ok || !p) {
-    u8g2.drawStr(0, 26, "SIN DATOS ESP-NOW");
-    snprintf(b, sizeof(b), "badLen:%lu badMg:%lu badCrc:%lu",
-             (unsigned long)badLen,
-             (unsigned long)badMagic,
-             (unsigned long)badCrc);
-    u8g2.drawStr(0, 38, b);
-    u8g2.sendBuffer();
-    return;
+    u8g2.drawStr(0, 24, "LINK: OFFLINE");
+  } else {
+    u8g2.drawStr(0, 24, "LINK: ONLINE");
   }
 
-  snprintf(b, sizeof(b), "seq:%lu age:%lums lost:%lu",
-           (unsigned long)p->seq,
-           (unsigned long)age_ms,
-           (unsigned long)lost);
-  u8g2.drawStr(0, 24, b);
-
-  snprintf(b, sizeof(b), "dirRaw:%.1f dir:%.1f off:%d",
-           dir_raw_deg, dir_corr_deg, (int)dir_offset_deg);
+  // Línea 2: SEQ
+  snprintf(b, sizeof(b), "SEQ: %lu", (unsigned long)seq);
   u8g2.drawStr(0, 34, b);
 
-  snprintf(b, sizeof(b), "pps:%.2f rpm:%.2f spd:%.2f",
-           pps, rpm, spd);
+  // Línea 3: AGE
+  snprintf(b, sizeof(b), "AGE: %lums", (unsigned long)age_ms);
   u8g2.drawStr(0, 44, b);
 
-  snprintf(b, sizeof(b), "vbat:%umV status:%04X i2c:%u",
-           p->vbat_mV, p->status, p->i2c_err_count);
+  // Línea 4: STATUS
+  snprintf(b, sizeof(b), "STAT: 0x%04X", (unsigned)status);
   u8g2.drawStr(0, 54, b);
 
-  snprintf(b, sizeof(b), "badLen:%lu badMg:%lu badCrc:%lu",
-           (unsigned long)badLen,
-           (unsigned long)badMagic,
-           (unsigned long)badCrc);
-  u8g2.drawStr(0, 63, b);
+  // Línea 5: MAC (abajo)
+  if (macStr && macStr[0]) {
+    // “MAC: xx:xx:...”
+    char m[32];
+    snprintf(m, sizeof(m), "MAC: %s", macStr);
+    u8g2.drawStr(0, 63, m);
+  } else {
+    // fallback: contadores mínimos
+    snprintf(b, sizeof(b), "badL:%lu badM:%lu badC:%lu",
+             (unsigned long)badLen, (unsigned long)badMagic, (unsigned long)badCrc);
+    u8g2.drawStr(0, 63, b);
+  }
 
   u8g2.sendBuffer();
 }
